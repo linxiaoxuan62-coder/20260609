@@ -1,7 +1,7 @@
 let video, prediction = "", hands = [];
 let lastGesture = ""; // 紀錄上一次的手勢，避免重複觸發
-let gameState = 'START'; // START, PLAYING, END
-let handPose; // ml5 handPose model
+let gameState = 'START'; // START, PLAYING, END, ERROR
+let handPose = null; // ml5 handPose model
 let score = 0;
 let health = 100;
 let startButton;
@@ -15,14 +15,8 @@ function setup() {
   // 建立全螢幕畫布
   createCanvas(windowWidth, windowHeight);
 
-  // 建立 webcam 影像擷取
-  video = createCapture(VIDEO);
-  video.size(640, 480);
-  video.hide();
-
-  // 載入 ml5 handPose 模型
-  handPose = ml5.handPose(video, modelReady);
-
+  // 攝影機和手勢模型將在 startGame() 中初始化
+  
   // 建立開始按鈕
   startButton = createButton('進入魔法領域');
   startButton.position(width / 2 - 60, height / 2 + 100);
@@ -35,8 +29,14 @@ function setup() {
 // 當模型載入完成時呼叫
 function modelReady() {
   console.log('HandPose model loaded!');
-  // 使用 detectStart 確保持續偵測並回傳手部陣列
-  handPose.detectStart(video, gotHands);
+  // 確保 video 已經被成功建立並有串流，才開始手勢偵測
+  if (video && video.elt.srcObject) {
+    handPose.detectStart(video, gotHands);
+  } else {
+    console.warn("Video stream not available, cannot start hand detection.");
+    // 如果 video 尚未準備好，可以考慮在這裡切換到 ERROR 狀態
+    // gameState = 'ERROR';
+  }
 }
 
 function gotHands(results) {
@@ -86,6 +86,8 @@ function draw() {
     drawGameContent();
   } else if (gameState === 'END') {
     drawEndScreen();
+  } else if (gameState === 'ERROR') { // 新增錯誤狀態
+    drawErrorScreen();
   }
 }
 
@@ -148,6 +150,19 @@ function drawStartScreen() {
               "✋ SHIELD (掌): 兩秒內不扣血\n" +
               "👌 FREEZE (OK): 冰凍敵人 3 秒 (+2分)";
   text(rules, width / 2, height / 2 + 10);
+}
+
+// 新增錯誤畫面
+function drawErrorScreen() {
+  textAlign(CENTER, CENTER);
+  fill(255, 50, 50);
+  textSize(40);
+  text("無法啟動攝影機", width / 2, height / 2 - 50);
+  fill(255);
+  textSize(20);
+  text("請檢查：\n1. 攝影機權限是否允許\n2. 攝影機是否被其他應用程式佔用\n3. 您的瀏覽器是否支援 HTTPS (GitHub Pages 需要)", width / 2, height / 2 + 20);
+  textSize(16);
+  text("點擊按鈕重試", width / 2, height / 2 + 120);
 }
 
 function drawEndScreen() {
@@ -324,12 +339,50 @@ function drawMonster(x, y, s, frozen, angry) {
 }
 
 function startGame() {
-  gameState = 'PLAYING';
   startButton.hide();
   startTime = millis(); // 記錄開始的時間點
   score = 0;
   health = 100;
   resetEnemy();
+
+  // 嘗試建立 webcam 影像擷取
+  video = createCapture(VIDEO, function(stream) {
+    // 成功取得串流的回呼函式
+    console.log("Video stream obtained successfully!");
+    video.size(640, 480);
+    video.hide();
+
+    // 攝影機成功啟動後，再載入 handPose 模型並開始偵測
+    handPose = ml5.handPose(video, modelReady);
+
+    gameState = 'PLAYING'; // 進入遊戲狀態
+  });
+
+  // 為底層的 <video> 元素添加錯誤監聽器
+  video.elt.onerror = function(e) {
+    console.error("Video element error:", e);
+    // 檢查是否為 NotReadableError (通常是權限問題)
+    if (e.target.error && e.target.error.name === 'NotReadableError') {
+      gameState = 'ERROR'; // 切換到錯誤狀態
+      startButton.html('重試'); // 更改按鈕文字為重試
+      startButton.show();
+      // 清理可能已部分建立的 video/handPose 物件，以便下次重試
+      if (video) { video.remove(); video = null; }
+      if (handPose) { handPose = null; }
+    }
+  };
+
+  // 如果 createCapture 沒有成功回呼，或者 video.elt.srcObject 仍然為空，則在一段時間後視為失敗
+  setTimeout(() => {
+    if (!video || !video.elt.srcObject) {
+      console.error("Failed to get video stream after delay. Transitioning to ERROR state.");
+      gameState = 'ERROR';
+      startButton.html('重試');
+      startButton.show();
+      if (video) { video.remove(); video = null; }
+      if (handPose) { handPose = null; }
+    }
+  }, 2000); // 給予 2 秒鐘的時間讓瀏覽器嘗試啟動攝影機
 }
 
 function styleButton(btn) {
